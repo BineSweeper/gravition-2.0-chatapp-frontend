@@ -1,5 +1,5 @@
 <svelte:head>
-  <title></title>
+  <title>Log in</title>
 </svelte:head>
 
 <div class="flex flex-col justify-center items-center h-screen">

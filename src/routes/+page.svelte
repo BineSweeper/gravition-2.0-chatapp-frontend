@@ -47,6 +47,24 @@
     { name: 'Frank', id: 'f' },
   ];
 
+  export let data: { nickname: string };
+
+  if (browser) {
+    onMount(() => {
+      const socket = new WebSocket('ws://localhost:3000');
+      socket.onopen = () => {
+        console.log('Connected to server');
+        let body = {
+          type: 'nickname',
+          data: {
+            nickname: data.nickname
+          }
+        };
+        socket.send(JSON.stringify(body));
+      };
+    });
+  }
+
   let selectedUser: User = users[0];
 </script>
 
