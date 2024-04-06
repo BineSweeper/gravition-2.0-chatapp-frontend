@@ -6,6 +6,8 @@
   import SvelteMarkdown from 'svelte-markdown'
   import autosize from 'svelte-autosize';
   import NewChat from "$lib/NewChat.svelte";
+  import { browser } from "$app/environment";
+  import { onMount } from "svelte";
 
   let messageText: string;
 
@@ -63,7 +65,7 @@
     <div class="flex flex-col border-r-4 dark:border-neutral-950 pr-2">
       <div class="flex flex-col flex-1 overflow-auto mt-5">
         {#each users as user}
-          <div
+          <button
             class="flex flex-row gap-5 sm:min-w-72 items-center p-2 rounded-md"
             class:bg-sky-500={selectedUser.id === user.id}
             class:dark:bg-sky-600={selectedUser.id === user.id}
@@ -71,12 +73,12 @@
             class:even:dark:bg-neutral-800={selectedUser.id !== user.id}
             class:odd:bg-neutral-100={selectedUser.id !== user.id}
             class:even:bg-neutral-200={selectedUser.id !== user.id}
-            class:hover:cursor-pointer={selectedUser.id !== user.id}
+            class:hover:cursor-default={selectedUser.id === user.id}
             on:click={() => selectedUser = user}
             >
             <div class="text-5xl">👤</div>
             <div class="text-xl">{user.name}</div>
-          </div>
+          </button>
         {/each}
       </div>
 
