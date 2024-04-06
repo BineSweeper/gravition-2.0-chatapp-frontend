@@ -3,6 +3,7 @@
   import { faMultiply } from "@fortawesome/free-solid-svg-icons";
   
   export let show: boolean;
+  export let callback: (arg0: string) => void;
 
   let disabled = false;
   let nickname = "";
@@ -12,11 +13,8 @@
   }
 
   function handleSubmit() {
-    disabled = true;
-    setTimeout(() => {
-      disabled = false;
-      closeModal();
-    }, 2000);
+    callback(nickname);
+    closeModal();
   }
 </script>
 

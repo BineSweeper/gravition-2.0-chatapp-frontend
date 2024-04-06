@@ -8,25 +8,11 @@
   import NewChat from "$lib/NewChat.svelte";
   import { browser } from "$app/environment";
   import { onMount } from "svelte";
+  import * as aesjs from 'aes-js';
 
   let messageText: string;
 
   let showNewModal: boolean = false;
-  
-  function handleSubmit(): void {
-    if (!messageText || !messageText.trim()) {
-      return
-    }
-    messagesStore.update(messages => {
-      messages.push({
-        message_id: 'a',
-        message_sender: 'a',
-        message_content: messageText
-      });
-      messageText = '';
-      return messages;
-    });
-  }
 
   function handleKeyDown(event: KeyboardEvent): void {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -36,22 +22,76 @@
   }
 
   interface User {
-    name: string,
-    id: string
+    nickname: string;
+    key: string;
   }
 
-  let users: User[] = [
-    { name: 'Alice', id: 'a' },
-    { name: 'Charlie', id: 'c' },
-    { name: 'David', id: 'd' },
-    { name: 'Frank', id: 'f' },
-  ];
+  interface Message {
+    timestamp: number;
+    sender: string;
+    receiver: string;
+    encrypted: boolean;
+    content: string;
+  }
 
+  let users: User[] = [];
+  let messages: Message[] = [];
+  let selectedUser: User | null = null;
+  $: relevantMessages = selectedUser ? messages.filter(message => message.sender === selectedUser!.nickname || message.receiver === selectedUser!.nickname) : [];
+  $: sortedMessages = relevantMessages.sort((a, b) => a.timestamp - b.timestamp);
+  $: decryptedMessages = sortedMessages.map(message => decryptMessage(message, selectedUser));
+
+  function decryptMessage(message: Message, user: User | null): Message {
+    if (!user) {
+      return message;
+    }
+    if (message.encrypted) {
+      let key = Uint8Array.from(atob(user.key), c => c.charCodeAt(0));
+      var aesCtr = new aesjs.ModeOfOperation.ctr(key, new aesjs.Counter(1));
+      var encryptedBytes = aesjs.utils.hex.toBytes(message.content);
+      var decryptedBytes = aesCtr.decrypt(encryptedBytes);
+      var decryptedText = aesjs.utils.utf8.fromBytes(decryptedBytes);
+      return {
+        encrypted: false,
+        content: decryptedText,
+        timestamp: message.timestamp,
+        sender: message.sender,
+        receiver: message.receiver
+      }
+    }
+    return message;
+  }
+
+  let db;
+  let socket: WebSocket;
+
+  function handleSubmit(): void {
+    if (!messageText || !(messageText = messageText.trim()) || !selectedUser) {
+      return
+    }
+    let key = Uint8Array.from(atob(selectedUser.key), c => c.charCodeAt(0));
+    var aesCtr = new aesjs.ModeOfOperation.ctr(key, new aesjs.Counter(1));
+    var textBytes = aesjs.utils.utf8.toBytes(messageText);
+    var encryptedBytes = aesCtr.encrypt(textBytes);
+    var encryptedHex = aesjs.utils.hex.fromBytes(encryptedBytes);
+    let message = {
+      encrypted: true,
+      content: encryptedHex,
+      timestamp: Date.now(),
+      recepientNick: selectedUser.nickname
+    }
+    let payload = {
+      type: 'message',
+      data: message
+    }
+    socket.send(JSON.stringify(payload));
+  }
+  
   export let data: { nickname: string };
-
+  
   if (browser) {
     onMount(() => {
-      const socket = new WebSocket('ws://localhost:3000');
+      socket = new WebSocket('ws://localhost:3000');
       socket.onopen = () => {
         console.log('Connected to server');
         let body = {
@@ -62,10 +102,90 @@
         };
         socket.send(JSON.stringify(body));
       };
-    });
+
+      const request = indexedDB.open("messages", 2);
+
+      request.onupgradeneeded = function() {
+        const db = request.result;
+        var messageStore = db.createObjectStore("messages", { keyPath: "timestamp" });
+        messageStore.createIndex("sender", "sender", { unique: false });
+        messageStore.createIndex("receiver", "receiver", { unique: false });
+        messageStore.createIndex("encrypted", "encrypted", { unique: false });
+        messageStore.createIndex("content", "content", { unique: false });
+        var userStore = db.createObjectStore("users", { keyPath: "nickname" });
+        userStore.createIndex("key", "key", { unique: false });
+      };
+
+      request.onsuccess = function() {
+        db = request.result;
+        var transaction = db.transaction(["users"], "readonly");
+        var userStore = transaction.objectStore("users");
+        var getAllUsersRequest = userStore.getAll();
+        getAllUsersRequest.onsuccess = function(event) {
+          var usersRes = event.target?.result;
+          users = usersRes ?? [];
+          console.log("Users retrieved successfully:", users);
+        };
+
+        var transaction = db.transaction(["messages"], "readonly");
+        var messageStore = transaction.objectStore("messages");
+        var getAllMessagesRequest = messageStore.getAll();
+        getAllMessagesRequest.onsuccess = function(event) {
+          var messagesRes = event.target?.result;
+          messages = messagesRes ?? [];
+          console.log("Messages retrieved successfully:", messages);
+        };
+      };
+
+      socket.onmessage = (event) => {
+        let message = JSON.parse(event.data);
+        let { type, data } = message;
+        console.log('Received message:', message);
+          if (type === 'conversation') {
+            var transaction = db.transaction(["users"], "readwrite");
+            var userStore = transaction.objectStore("users");
+            let user = {
+              "nickname": data.recipient,
+              "key": data.key
+            }
+            console.log(user);
+            var addRequest = userStore.add(user);
+            addRequest.onsuccess = function(event) {
+              console.log("New user added successfully");
+              users.push(user);
+              window.location.reload();
+            };
+            addRequest.onerror = function(event) {
+              console.error("Error adding user:", event.target.error);
+            };
+
+            console.log('Users:', users)
+          } else if (type === 'message') {
+            var transaction = db.transaction(["messages"], "readwrite");
+            var messageStore = transaction.objectStore("messages");
+            let message = data as Message;
+            var addRequest = messageStore.add(message);
+            addRequest.onsuccess = function(event) {
+              console.log("New message added successfully");
+            };
+            addRequest.onerror = function(event) {
+              console.error("Error adding message:", event.target.error);
+            };
+          }
+      };
+      });
+    }
+
+    function newConversation(arg0: string) {
+      console.log('New conversation:', arg0);
+      socket.send(JSON.stringify({
+type: 'conversation',
+      data: {
+        recipientNick: arg0
+      }
+    }));
   }
 
-  let selectedUser: User = users[0];
 </script>
 
 <svelte:head>
@@ -85,17 +205,17 @@
         {#each users as user}
           <button
             class="flex flex-row gap-5 sm:min-w-72 items-center p-2 rounded-md"
-            class:bg-sky-500={selectedUser.id === user.id}
-            class:dark:bg-sky-600={selectedUser.id === user.id}
-            class:odd:dark:bg-neutral-900={selectedUser.id !== user.id}
-            class:even:dark:bg-neutral-800={selectedUser.id !== user.id}
-            class:odd:bg-neutral-100={selectedUser.id !== user.id}
-            class:even:bg-neutral-200={selectedUser.id !== user.id}
-            class:hover:cursor-default={selectedUser.id === user.id}
+            class:bg-sky-500={selectedUser?.nickname === user.nickname}
+            class:dark:bg-sky-600={selectedUser?.nickname === user.nickname}
+            class:odd:dark:bg-neutral-900={selectedUser?.nickname !== user.nickname}
+            class:even:dark:bg-neutral-800={selectedUser?.nickname !== user.nickname}
+            class:odd:bg-neutral-100={selectedUser?.nickname !== user.nickname}
+            class:even:bg-neutral-200={selectedUser?.nickname !== user.nickname}
+            class:hover:cursor-default={selectedUser?.nickname === user.nickname}
             on:click={() => selectedUser = user}
             >
             <div class="text-5xl">👤</div>
-            <div class="text-xl">{user.name}</div>
+            <div class="text-xl">{user.nickname}</div>
           </button>
         {/each}
       </div>
@@ -106,16 +226,16 @@
     
     <div class="flex flex-col flex-1">
       <div class="flex flex-col flex-1 overflow-auto gap-1 text-lg mt-5">
-        {#each $messagesStore as message}
-          <div class="flex justify-between" class:flex-row-reverse={message.message_sender === 'a'}>
+        {#each decryptedMessages as message}
+          <div class="flex justify-between" class:flex-row-reverse={message.sender === data.nickname}>
             <div
               class="max-w-md px-3 py-1 rounded-lg shadow transition"
-              class:bg-neutral-300={message.message_sender !== 'a'}
-              class:dark:bg-neutral-600={message.message_sender !== 'a'}
-              class:bg-sky-400={message.message_sender === 'a'}
-              class:dark:bg-sky-500={message.message_sender === 'a'}
+              class:bg-neutral-300={message.sender !== data.nickname}
+              class:dark:bg-neutral-600={message.sender !== data.nickname}
+              class:bg-sky-400={message.sender === data.nickname}
+              class:dark:bg-sky-500={message.sender === data.nickname}
             >
-              <SvelteMarkdown source={message.message_content} />
+              <SvelteMarkdown source={message.content} />
             </div>
           </div>
         {/each}
@@ -139,4 +259,4 @@
   </div>
 </div>
 
-<NewChat bind:show={showNewModal} />
+<NewChat bind:show={showNewModal} callback={newConversation} />
