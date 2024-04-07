@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { messagesStore } from "$lib";
   import { FontAwesomeIcon } from '@fortawesome/svelte-fontawesome'
   import { faArrowAltCircleRight } from '@fortawesome/free-solid-svg-icons'
   import ThemeSwitcher from '$lib/ThemeSwitcher.svelte';
@@ -9,6 +8,7 @@
   import { browser } from "$app/environment";
   import { onMount } from "svelte";
   import * as aesjs from 'aes-js';
+  import { writable } from "svelte/store";
 
   let messageText: string;
 
@@ -34,10 +34,11 @@
     content: string;
   }
 
+  let messagesStore = writable<Message[]>([]);
   let users: User[] = [];
   let messages: Message[] = [];
   let selectedUser: User | null = null;
-  $: relevantMessages = selectedUser ? messages.filter(message => message.sender === selectedUser!.nickname || message.receiver === selectedUser!.nickname) : [];
+  $: relevantMessages = selectedUser ? $messagesStore.filter(message => message.sender === selectedUser!.nickname || message.receiver === selectedUser!.nickname) : [];
   $: sortedMessages = relevantMessages.sort((a, b) => a.timestamp - b.timestamp);
   $: decryptedMessages = sortedMessages.map(message => decryptMessage(message, selectedUser));
 
@@ -78,16 +79,22 @@
       encrypted: true,
       content: encryptedHex,
       timestamp: Date.now(),
-      recepientNick: selectedUser.nickname
+      receiver: selectedUser.nickname,
+      sender: data.nickname
     }
+    console.log(selectedUser);
     let payload = {
       type: 'message',
       data: message
     }
     socket.send(JSON.stringify(payload));
+    messageText = '';
+    return;
   }
   
   export let data: { nickname: string };
+
+  let markedDirty = false;
   
   if (browser) {
     onMount(() => {
@@ -104,7 +111,7 @@
       };
 
       const request = indexedDB.open("messages", 2);
-
+      
       request.onupgradeneeded = function() {
         const db = request.result;
         var messageStore = db.createObjectStore("messages", { keyPath: "timestamp" });
@@ -118,22 +125,26 @@
 
       request.onsuccess = function() {
         db = request.result;
+        
         var transaction = db.transaction(["users"], "readonly");
         var userStore = transaction.objectStore("users");
         var getAllUsersRequest = userStore.getAll();
         getAllUsersRequest.onsuccess = function(event) {
           var usersRes = event.target?.result;
           users = usersRes ?? [];
+          if (users.length > 0) {
+            selectedUser = users[0];
+          }
           console.log("Users retrieved successfully:", users);
         };
 
-        var transaction = db.transaction(["messages"], "readonly");
-        var messageStore = transaction.objectStore("messages");
+        var transaction2 = db.transaction(["messages"], "readonly");
+        var messageStore = transaction2.objectStore("messages");
         var getAllMessagesRequest = messageStore.getAll();
         getAllMessagesRequest.onsuccess = function(event) {
           var messagesRes = event.target?.result;
-          messages = messagesRes ?? [];
-          console.log("Messages retrieved successfully:", messages);
+          messagesStore.set(messagesRes ?? []);
+          console.log("Messages retrieved successfully:", messagesStore);
         };
       };
 
@@ -141,32 +152,38 @@
         let message = JSON.parse(event.data);
         let { type, data } = message;
         console.log('Received message:', message);
-          if (type === 'conversation') {
-            var transaction = db.transaction(["users"], "readwrite");
-            var userStore = transaction.objectStore("users");
-            let user = {
-              "nickname": data.recipient,
-              "key": data.key
-            }
-            console.log(user);
-            var addRequest = userStore.add(user);
-            addRequest.onsuccess = function(event) {
-              console.log("New user added successfully");
-              users.push(user);
-              window.location.reload();
-            };
-            addRequest.onerror = function(event) {
-              console.error("Error adding user:", event.target.error);
-            };
+        if (type === 'conversation') {
+          var transaction = db.transaction(["users"], "readwrite");
+          var userStore = transaction.objectStore("users");
+          let user = {
+            "nickname": data.recipient,
+            "key": data.key
+          }
+          console.log(user);
+          var addRequest = userStore.add(user);
+          addRequest.onsuccess = function(event) {
+            console.log("New user added successfully");
+            users.push(user);
+            window.location.reload();
+          };
+          addRequest.onerror = function(event) {
+            console.error("Error adding user:", event.target.error);
+          };
 
             console.log('Users:', users)
           } else if (type === 'message') {
             var transaction = db.transaction(["messages"], "readwrite");
             var messageStore = transaction.objectStore("messages");
-            let message = data as Message;
+            let message = data.message;
+            console.log(`Message: ${JSON.stringify(message)}`);
             var addRequest = messageStore.add(message);
             addRequest.onsuccess = function(event) {
               console.log("New message added successfully");
+              messagesStore.update((mess) => {
+                mess.push(message);
+                markedDirty = !markedDirty;
+                return mess;
+              });
             };
             addRequest.onerror = function(event) {
               console.error("Error adding message:", event.target.error);
@@ -179,10 +196,10 @@
     function newConversation(arg0: string) {
       console.log('New conversation:', arg0);
       socket.send(JSON.stringify({
-type: 'conversation',
-      data: {
-        recipientNick: arg0
-      }
+        type: 'conversation',
+        data: {
+          recipientNick: arg0
+        }
     }));
   }
 
@@ -198,47 +215,49 @@ type: 'conversation',
     <ThemeSwitcher />
   </div>
 
-  <div class="flex flex-row flex-1 gap-2">
+  <div class="flex flex-row flex-1 gap-2 overflow-auto h-screen">
 
     <div class="flex flex-col border-r-4 dark:border-neutral-950 pr-2">
-      <div class="flex flex-col flex-1 overflow-auto mt-5">
-        {#each users as user}
-          <button
-            class="flex flex-row gap-5 sm:min-w-72 items-center p-2 rounded-md"
-            class:bg-sky-500={selectedUser?.nickname === user.nickname}
-            class:dark:bg-sky-600={selectedUser?.nickname === user.nickname}
-            class:odd:dark:bg-neutral-900={selectedUser?.nickname !== user.nickname}
-            class:even:dark:bg-neutral-800={selectedUser?.nickname !== user.nickname}
-            class:odd:bg-neutral-100={selectedUser?.nickname !== user.nickname}
-            class:even:bg-neutral-200={selectedUser?.nickname !== user.nickname}
-            class:hover:cursor-default={selectedUser?.nickname === user.nickname}
-            on:click={() => selectedUser = user}
-            >
-            <div class="text-5xl">👤</div>
-            <div class="text-xl">{user.nickname}</div>
-          </button>
-        {/each}
+      <div class="flex flex-col overflow-auto flex-1 mt-5">
+        {#key markedDirty}
+          {#each users as user}
+            <button
+              class="flex flex-row gap-5 sm:min-w-72 items-center p-2 rounded-md"
+              class:bg-sky-500={selectedUser?.nickname === user.nickname}
+              class:dark:bg-sky-600={selectedUser?.nickname === user.nickname}
+              class:odd:dark:bg-neutral-900={selectedUser?.nickname !== user.nickname}
+              class:even:dark:bg-neutral-800={selectedUser?.nickname !== user.nickname}
+              class:odd:bg-neutral-100={selectedUser?.nickname !== user.nickname}
+              class:even:bg-neutral-200={selectedUser?.nickname !== user.nickname}
+              class:hover:cursor-default={selectedUser?.nickname === user.nickname}
+              on:click={() => selectedUser = user}
+              >
+              <div class="text-5xl">👤</div>
+              <div class="text-xl">{user.nickname}</div>
+            </button>
+          {/each}
+        {/key}
       </div>
 
       <button class="p-4 mt-5 mb-3 bg-sky-500 dark:bg-sky-600 hover:bg-sky-600 dark:hover:bg-sky-700 transition rounded-2xl" on:click={() => showNewModal = true}
         >New Chat</button>
     </div>
     
-    <div class="flex flex-col flex-1">
-      <div class="flex flex-col flex-1 overflow-auto gap-1 text-lg mt-5">
-        {#each decryptedMessages as message}
-          <div class="flex justify-between" class:flex-row-reverse={message.sender === data.nickname}>
-            <div
-              class="max-w-md px-3 py-1 rounded-lg shadow transition"
-              class:bg-neutral-300={message.sender !== data.nickname}
-              class:dark:bg-neutral-600={message.sender !== data.nickname}
-              class:bg-sky-400={message.sender === data.nickname}
-              class:dark:bg-sky-500={message.sender === data.nickname}
-            >
-              <SvelteMarkdown source={message.content} />
+    <div class="flex flex-col flex-1 overflow-scroll">
+      <div class="flex flex-col flex-1 overflow-scroll gap-1 text-lg mt-5">
+          {#each decryptedMessages as message}
+            <div class="flex justify-between" class:flex-row-reverse={message.sender === data.nickname}>
+              <div
+                class="max-w-md px-3 py-1 rounded-lg shadow transition"
+                class:bg-neutral-300={message.sender !== data.nickname}
+                class:dark:bg-neutral-600={message.sender !== data.nickname}
+                class:bg-sky-400={message.sender === data.nickname}
+                class:dark:bg-sky-500={message.sender === data.nickname}
+              >
+                <SvelteMarkdown source={message.content} />
+              </div>
             </div>
-          </div>
-        {/each}
+          {/each}
       </div>
 
       <form class="flex flex-row items-end " on:submit|preventDefault={handleSubmit}>

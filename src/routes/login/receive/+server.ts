@@ -8,6 +8,7 @@ const defaultCookieOpts = {
 };
 
 export async function POST({ request, cookies }) {
+    console.log('reeee');
     const nickname = (await request.formData()).get('nickname') as string;
     cookies.set('nickname', nickname, defaultCookieOpts);
     throw redirect(302, '/');
